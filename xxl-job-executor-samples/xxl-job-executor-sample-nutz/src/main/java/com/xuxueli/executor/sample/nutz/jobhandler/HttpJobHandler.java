@@ -2,77 +2,119 @@ package com.xuxueli.executor.sample.nutz.jobhandler;
 
 import com.xxl.job.core.biz.model.ReturnT;
 import com.xxl.job.core.handler.IJobHandler;
-import com.xxl.job.core.handler.annotation.JobHandler;
 import com.xxl.job.core.log.XxlJobLogger;
-import org.apache.http.HttpEntity;
-import org.apache.http.HttpResponse;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.util.EntityUtils;
-import org.nutz.ioc.loader.annotation.IocBean;
 
-import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.DataOutputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Arrays;
 
 /**
  * 跨平台Http任务
  *
  * @author xuxueli 2018-09-16 03:48:34
  */
-@JobHandler(value="httpJobHandler")
-@IocBean
 public class HttpJobHandler extends IJobHandler {
 
-	@Override
-	public ReturnT<String> execute(String param) throws Exception {
+    @Override
+    public ReturnT<String> execute(String param) throws Exception {
 
-		// valid
-		if (param==null || param.trim().length()==0) {
-			XxlJobLogger.log("URL Empty");
-			return FAIL;
-		}
+        // param parse
+        if (param==null || param.trim().length()==0) {
+            XxlJobLogger.log("param["+ param +"] invalid.");
+            return ReturnT.FAIL;
+        }
+        String[] httpParams = param.split("\n");
+        String url = null;
+        String method = null;
+        String data = null;
+        for (String httpParam: httpParams) {
+            if (httpParam.startsWith("url:")) {
+                url = httpParam.substring(httpParam.indexOf("url:") + 4).trim();
+            }
+            if (httpParam.startsWith("method:")) {
+                method = httpParam.substring(httpParam.indexOf("method:") + 7).trim().toUpperCase();
+            }
+            if (httpParam.startsWith("data:")) {
+                data = httpParam.substring(httpParam.indexOf("data:") + 5).trim();
+            }
+        }
 
-		// httpGet config
-		HttpGet httpGet = new HttpGet(param);
-		RequestConfig requestConfig = RequestConfig.custom().setSocketTimeout(5000).setConnectTimeout(5000).build();
-		httpGet.setConfig(requestConfig);
+        // param valid
+        if (url==null || url.trim().length()==0) {
+            XxlJobLogger.log("url["+ url +"] invalid.");
+            return ReturnT.FAIL;
+        }
+        if (method==null || !Arrays.asList("GET", "POST").contains(method)) {
+            XxlJobLogger.log("method["+ method +"] invalid.");
+            return ReturnT.FAIL;
+        }
 
-		CloseableHttpClient httpClient = null;
-		try{
-			httpClient = HttpClients.custom().disableAutomaticRetries().build();
+        // request
+        HttpURLConnection connection = null;
+        BufferedReader bufferedReader = null;
+        try {
+            // connection
+            URL realUrl = new URL(url);
+            connection = (HttpURLConnection) realUrl.openConnection();
 
-			// parse response
-			HttpResponse response = httpClient.execute(httpGet);
-			HttpEntity entity = response.getEntity();
-			if (response.getStatusLine().getStatusCode() != 200) {
-				XxlJobLogger.log("Http StatusCode({}) Invalid.", response.getStatusLine().getStatusCode());
-				return FAIL;
-			}
-			if (null == entity) {
-				XxlJobLogger.log("Http Entity Empty.");
-				return FAIL;
-			}
+            // connection setting
+            connection.setRequestMethod(method);
+            connection.setDoOutput(true);
+            connection.setDoInput(true);
+            connection.setUseCaches(false);
+            connection.setReadTimeout(5 * 1000);
+            connection.setConnectTimeout(3 * 1000);
+            connection.setRequestProperty("connection", "Keep-Alive");
+            connection.setRequestProperty("Content-Type", "application/json;charset=UTF-8");
+            connection.setRequestProperty("Accept-Charset", "application/json;charset=UTF-8");
 
-			String responseMsg = EntityUtils.toString(entity, "UTF-8");
-			XxlJobLogger.log(responseMsg);
-			EntityUtils.consume(entity);
-			return SUCCESS;
-		} catch (Exception e) {
-			XxlJobLogger.log(e);
-			return FAIL;
-		} finally{
-			if (httpGet!=null) {
-				httpGet.releaseConnection();
-			}
-			if (httpClient!=null) {
-				try {
-					httpClient.close();
-				} catch (IOException e) {
-					XxlJobLogger.log(e);
-				}
-			}
-		}
-	}
+            // do connection
+            connection.connect();
+
+            // data
+            if (data!=null && data.trim().length()>0) {
+                DataOutputStream dataOutputStream = new DataOutputStream(connection.getOutputStream());
+                dataOutputStream.write(data.getBytes("UTF-8"));
+                dataOutputStream.flush();
+                dataOutputStream.close();
+            }
+
+            // valid StatusCode
+            int statusCode = connection.getResponseCode();
+            if (statusCode != 200) {
+                throw new RuntimeException("Http Request StatusCode(" + statusCode + ") Invalid.");
+            }
+
+            // result
+            bufferedReader = new BufferedReader(new InputStreamReader(connection.getInputStream(), "UTF-8"));
+            StringBuilder result = new StringBuilder();
+            String line;
+            while ((line = bufferedReader.readLine()) != null) {
+                result.append(line);
+            }
+            String responseMsg = result.toString();
+
+            XxlJobLogger.log(responseMsg);
+            return ReturnT.SUCCESS;
+        } catch (Exception e) {
+            XxlJobLogger.log(e);
+            return ReturnT.FAIL;
+        } finally {
+            try {
+                if (bufferedReader != null) {
+                    bufferedReader.close();
+                }
+                if (connection != null) {
+                    connection.disconnect();
+                }
+            } catch (Exception e2) {
+                XxlJobLogger.log(e2);
+            }
+        }
+
+    }
 
 }
